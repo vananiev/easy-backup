@@ -1,0 +1,108 @@
+#!/bin/bash
+
+#default values
+NLS_LANG=AMERICAN_AMERICA.CL8MSWIN1251
+SQLCONN='/ as sysdba'
+startAfterBackup=auto
+
+function abortBackup(){
+	[ -z "$_abortBackup_recursive" ] && _abortBackup_recursive=yes || return
+	[ "$startAfterBackup" == 'yes' ] && startupDb
+	_abortBackup $host $sid
+}
+
+function is_db_run(){
+	if $RemoteShell $host "$ENV  echo 'select status from v\$instance ;' | sqlplus -S $SQLCONN" | grep -i OPEN &>/dev/null ; then
+		return 0
+	else
+		return 1
+	fi
+}
+
+function getDbFiles(){
+	startupDb
+	is_db_run || { _log "Can't get file list, DB '$db' is stopped"; abortBackup; }
+
+	detail_log "List of backup files"
+	$RemoteShell $host "$ENV  \
+	sqlplus -S $SQLCONN <<EOFSQL
+		set termout off
+		set pages 0
+		set lines 300
+		set feedback off
+		set trimspool on
+		spool /tmp/backup_oracle_files.txt
+		select file_name from (
+		select file_name from sys.dba_data_files
+		union
+		select member from sys.v_\\\$logfile
+		union
+		select name from v\\\$controlfile
+		union
+		select value
+			from v\\\$parameter
+			where name = 'spfile');
+		spool off
+EOFSQL
+"
+	$RemoteShell $host "cat /tmp/backup_oracle_files.txt" | grep 'ORA-' &>/dev/null && { _log "Error while getting list of files"; abortBackup; }
+}
+
+function shutdownDb(){
+	is_db_run || return
+	detail_log "Shutting down DB"
+	$RemoteShell $host "$ENV echo 'shutdown immediate' |  sqlplus -S $SQLCONN"
+	is_db_run && { _log "Can't shutdown DB '$db' for backuping"; abortBackup; }
+}
+
+function makeBackup(){
+	shutdownDb
+	detail_log "Transferring"
+	$RemoteShell -o Compression=no -c arcfour $host "tar -cf - --files-from=/tmp/backup_oracle_files.txt | lzop -c" \
+		> $BackupStorage/$db/$sid-$(date +%Y%m%d_%H:%M).tar.lzo
+	[ "$?" -ne 0 ] && { _log "Error while backuping DB '$db'"; abortBackup; }
+}
+
+function startupDb(){
+	is_db_run && return
+    detail_log "Starting up DB"
+    $RemoteShell $host "$ENV echo 'startup' |  sqlplus -S $SQLCONN"
+    is_db_run || { _log "Can't startup DB '$db'"; abortBackup; }
+}
+
+function getEnv(){
+	local env=". ~/.bash_profile;"
+	[ ! -z "$ORACLE_SID" ] && env="$env export ORACLE_SID=$ORACLE_SID;"
+	[ ! -z "$ORACLE_HOME" ] && env="$env  export ORACLE_HOME=$ORACLE_HOME;"
+	echo $env
+}
+
+cd $(dirname $0)
+{ [ -f "functions" ] && source ./functions; } || \
+    { _file=/usr/lib/easy-backup/backup_oracle/functions; [ -f "$_file" ] && source $_file; } || \
+        { echo "Can't find backup_oracle/functions" ; exit 1; }
+
+checkArgCnt $(basename $0) $# 1
+db="$1"
+
+loadConfig
+loadSchedulerConfig $db
+loadDbConfig $db
+host="$(echo $db | cut -d'-' -f1)"
+sid="$ORACLE_SID"
+ENV="$( getEnv )"
+if [ "$startAfterBackup" == 'auto' ]; then
+	is_db_run && startAfterBackup=yes || startAfterBackup=no
+fi
+
+_log "Backup for DB '$db' is started" info
+lockBackup $host $sid
+saveDaemonState $host
+getDbFiles
+makeBackup
+[ "$startAfterBackup" == 'yes' ] && startupDb
+restoreDaemonState $host
+deleteLocalOldBackups "$BackupStorage/$db"
+unlockBackup $host $sid
+
+_log "Backup for DB '$db' successfully ended" info

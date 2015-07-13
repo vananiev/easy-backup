@@ -1,0 +1,6 @@
+# vmname  |    backup     | max backups |  save remote
+#         | days of week  |    save     |    backup
+#------------------------------------------------------
+#example        7-1,6           1           false
+#example        2               1           false   (no autobackup)
+

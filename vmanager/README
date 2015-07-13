@@ -1,0 +1,16 @@
+Зависимости:
+ - менеджер бекапов 'easy-backup'.
+ - правила sudo (пример в файле  extern-config-files/vmanager.sudo)
+
+Пользователь, под которым запускается утилдита, должен иметь доступ по ssh-ключу
+до всех гипервизоров указанных в конфиге lib/conf.d/vmanager.conf.
+
+Консольная утилита
+	$ lib/vmanager help
+
+Для работы через Web необходимо скопировать папку www в /var/www/html/.
+Рекомендуется настроить сайт через работу только по https, для этого
+нужно использовать конфиг  extern-config-files/httpd-sample-vmanager.conf
+Пользователи:Пароли по умолчанию для Web:
+ - admin:admin
+ - guest:guest

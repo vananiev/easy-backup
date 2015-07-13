@@ -1,0 +1,6 @@
+Defaults:vmanager !requiretty
+vmanager ALL=(backuper) NOPASSWD:/bin/bash -c /home/backuper/scripts/backup_vm/backup *
+vmanager ALL=(backuper) NOPASSWD:/bin/bash -c /usr/bin/backup_vm *
+Defaults:apache !requiretty
+apache ALL=(vmanager) NOPASSWD:/home/vmanager/vmanager/lib/vmanager *
+apache ALL=(vmanager) NOPASSWD:/usr/bin/vmanager *
