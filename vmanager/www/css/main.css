@@ -1,0 +1,50 @@
+html {
+    margin: 0px;
+    padding: 0px;
+    width: 100%;
+    height: 100%;
+	-moz-transition: all 0.3s ease-in 0s; -webkit-transition: all 0.3s ease-in 0s;
+	-o-transition: all 0.3s ease-in 0s; transition: all 0.3s ease-in 0s;
+	font-family: Georgia,sans;
+	font-size: 14px;
+	color: #444;
+}
+
+body{
+	margin: 0;
+	padding: 32px;
+	/*background: linear-gradient(to bottom, #FFF 0%, #F6F6F6 47%, #EDEDED 100%) repeat fixed 0% 0% transparent;*/
+	background-color: #F6F6F6;
+}
+
+table{
+	border-collapse: collapse;
+}
+
+table th{
+	cursor: pointer;
+	font-weight: bold;
+}
+
+table td{
+	padding: auto auto;
+	margin: 0;
+	text-align: center;
+}
+
+table#vms{
+	width: 90%;
+	margin: 0 5%;
+	min-width: 1000px;
+}
+
+table#vms tr:hover{
+	background-color: rgba(255,200,100,0.5);
+}
+
+h1{
+	text-align: center;
+	border-bottom: 1px solid #DDD;
+	color: #666;
+	margin: 0px auto 20px;
+}

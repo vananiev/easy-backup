@@ -1,0 +1,8 @@
+AuthType Basic
+AuthName "Authentication"
+AuthUserFile "/var/www/html/vmanager/.htpasswd"
+Require valid-user
+
+<Files .htpasswd>
+	deny from all
+</Files>

@@ -1,0 +1,5 @@
+# name from  |    backup     | max backups
+#   db.d     | days of week  |    save    
+#--------------------------------------
+#example           7-1,6           1
+#example2          -               1	   #(no autobackup)

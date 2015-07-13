@@ -1,0 +1,119 @@
+#!/bin/bash
+
+__DIR__="$(dirname ${BASH_SOURCE[0]})/"
+
+cfg_path="$__DIR__/conf.d/"
+[ ! -d "$cfg_path" ] && cfg_path=/etc/vmanager.d/
+[ ! -d "$cfg_path" ] && { echo _log "Can't find config path $cfg_path"; exit 1; }
+
+backup_vm_scheduler='/home/backuper/scripts/backup_vm/backup_vm.d/scheduler.conf'
+[ ! -f "$backup_vm_scheduler" ] && backup_vm_scheduler='/etc/backup_vm.d/scheduler.conf'
+[ ! -f "$backup_vm_scheduler" ] && { echo _log "Can't find config path $backup_vm_scheduler"; exit 1; }
+
+backup_vm_path='/BACKUP/servers'
+cacheVmLocationFile=/var/tmp/vmLocations.vmanager.cache
+
+function _log(){
+	echo "$1"
+	[ ! -f "$DetailedLogFile" ] && touch $DetailedLogFile
+	[ -w "$DetailedLogFile" ] && echo "$(date +"%b %d %T") $1" >> $DetailedLogFile
+}
+
+# $1 - line in format: hostName vmName
+# return 1 is error
+function printVmInfo(){
+	local line=,vmName=, host=, info=,vmMem=,hostMem=
+	local state=,BackupDays=,lastBackupLog=,lastBackupDay=,lastBackupStatus=
+	checkArgCnt $FUNCNAME $# 1
+	line=( $1 )
+	host="${line[0]}"
+	vmName="${line[1]}"
+	state=$( remoteVirsh "$host" "domstate $vmName"  ) || return 1
+	autostart=$( $RemoteShell "$host" " grep -E '<name>$vmName</name>' /etc/libvirt/qemu/autostart/* &>/dev/null && echo on || echo off")
+	hostMem=$(( $( $RemoteShell "$host" "grep MemFree /proc/meminfo | awk '{print \$2}';") / 1024 )) # in MiB
+	vmMem=0
+	if [ "x$state" == "xrunning" ]; then
+		info=( $( remoteVirsh "$host" "dommemstat $vmName") ) || return 1
+		vmMem=$(( ${info[1]#rss_} / 1024 )) # in MiB
+	fi
+	BackupDays=$(grep -E "^$vmName\s+" $backup_vm_scheduler | awk '{print $2}' )
+	[ -z "$BackupDays" ] && BackupDays='-'
+	lastBackupLog=$( grep $vmName /var/log/messages* | grep -iE "successfully|fail" | tail -1 )
+	[ ! -z "$lastBackupLog" ] && \
+	lastBackupStatus=$( echo $lastBackupLog | grep successfully &>/dev/null && echo ok || echo fail  ) || lastBackupStatus='-'
+	lastBackupDay=$( checkBackupStatus $vmName ) || lastBackupDay='-'
+	echo "$vmName $state $autostart $host $vmMem $hostMem $BackupDays $lastBackupDay $lastBackupStatus"
+}
+
+# $1 - host/hypervisor
+# $2 - command
+function remoteVirsh(){
+	checkArgCnt $FUNCNAME $# 2
+	local command="$2"
+	local host="$1"
+	info=$( echo "$command" | $RemoteShell $host 'cat - | virsh -q' | \
+	grep -v 'virsh ' | tr ' ' '_'; \
+	echo ${PIPESTATUS[*]} | grep -E '[1-9]' &>/dev/null \
+	&& exit 1 || exit 0 ) || return 1
+
+	echo $info
+}
+
+# $1 - vm name
+# $2 - command
+function virshForVm(){
+	checkArgCnt $FUNCNAME $# 2
+	local vmName="$1"
+	local cmd="$2"
+	host=$(getHostByVmName $vmName) || { echo "Host for vm '$vmName' not found"; return 2; }
+    remoteVirsh "$host" "$cmd" || return 1
+    return 0	
+}
+
+# $1 - vm name
+function checkBackupStatus(){
+	checkArgCnt $FUNCNAME $# 1
+	local vmName="$1"
+	local dir=,size=,month_day=
+	pushd /BACKUP/servers/$vmName/snapshot/ &>/dev/null || return 1
+	#dir=$(ls -1t . | grep -v no_rm | head -1 )
+	dir=$( find . -type d \! -name no_rm \! -name . -printf "%T@ %p\n" | sort -nr | awk '{print $2}' | head -1 )
+	[ ! -d "$dir" ] && return 2
+	month_day=$(LANG=en stat $dir | grep Modify: | perl -ane ' $_=~/-([^.]+)/; print $1;' | tr ' ' '_')
+	size=$( du -sb $dir | awk '{print $1}' )
+	[ "0$size" -eq 0 -o "0$size" -eq 4096 ] && return 3
+	popd &>/dev/null
+	echo $month_day
+	return 0
+}
+
+# $1 - host server name
+function getAutoStartVm(){
+	checkArgCnt $FUNCNAME $# 1
+	local host="$1"
+	$RemoteShell "$host" "\
+		grep -hE '<name>.+</name>' /etc/libvirt/qemu/autostart/* | \
+			sed  -n 's#<name>\(.*\)</name>#\1#p' \
+	"
+}
+
+# start all Vm which in autostart list
+# $1 - host name
+function autostartVmsForHost(){
+	checkArgCnt $FUNCNAME $# 1
+	local host="$host"
+	local as_vms=( $(getAutoStartVm $host) )
+	local vms=
+	for vm in ${as_vms[*]}; do
+		isLokedBackup "$host" "$vm" && echo "$(date +"%b %d %T") Backuping $vm, excluding from autostart" || vms="$vms $vm"
+	done
+	echo "Autostart vms for host '$host': $vms"
+	stdout=$( $RemoteShell $host " \
+		for vm in $vms; do \
+			LANG=en_US virsh list | grep \$vm &>/dev/null || \
+				virsh start \$vm; \
+		done; \
+	" )
+	[ -n "$stdout" ] && echo "$(date +"%b %d %T") $stdout"
+}
+

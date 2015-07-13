@@ -1,0 +1,13 @@
+# ORACLE_SID is necessary parameter
+ORACLE_SID=january
+
+# ORACLE_HOME
+# default: get from remote oracle user shell env
+
+# sqlplus connect string
+# default: SQLCONN='/ as sysdba'
+
+# Start DB after backup and if Backup is aborted
+# values: yes / no / auto
+# auto - state is the same as before backup
+# default: startAfterBackup=auto

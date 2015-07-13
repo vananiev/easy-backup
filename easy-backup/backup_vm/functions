@@ -1,0 +1,111 @@
+#!/bin/bash
+
+__DIR__="$(dirname ${BASH_SOURCE[0]})/"
+src="$__DIR__/../lib/functions"
+{ [ -f "$src" ] && source $src; } || \
+	{ _file=/usr/lib/easy-backup/functions; [ -f "$_file" ] && source $_file; } || \
+		{ echo "Can't find $src" ; exit 1; }
+
+#
+cfg_path="$__DIR__/backup_vm.d"
+[ ! -d "$cfg_path" ] && cfg_path=/etc/backup_vm.d
+[ ! -d "$cfg_path" ] && { echo _log "Can't find config path $cfg_path"; exit 1; }
+
+#
+lockdir=/var/lock/backup_vm
+
+# 
+cacheVmLocationFile=/var/tmp/vmLocations.cache
+
+# List of virtualization servers from which we want backuping VMs
+HostServers=
+
+# Path to local backup holder path
+BackupStorage=/BACKUP/servers
+
+# Should we save remote backup
+SaveRemoteBackup="false"
+
+# Remote backup steps logging file
+DetailedLogFile=/var/log/backup_vm
+
+# $1 - VM name
+function loadSchedulerConfig(){
+    checkArgCnt $FUNCNAME $# 1
+    local vmName=$1
+    local array=( $(grep -E "^$vmName\s+" $cfg_path/scheduler.conf | tr '\t' ' ') )
+    [ ${#array[*]} -eq 0  ] &&  { _log "Can't find VM $vmName in shediler.conf"; exit 7; }
+	BackupDays=${array[1]}
+    MaxBackupCount=${array[2]}
+    SaveRemoteBackup=${array[3]}
+}
+
+function cacheVmLocation(){
+    local vms=
+    local vm=
+    : > $cacheVmLocationFile
+    for host in ${HostServers[*]}; do
+        vms=$($RemoteShell $host LANG=C virsh list --all | awk '{print $2}' | grep -vi name)
+        for vm in $vms; do
+            echo "$host $vm" >> $cacheVmLocationFile
+        done
+    done
+}
+
+# $1...$n - space separated vmNames
+function isOneHost(){
+    [ $# -eq 1 ] && return;
+    exit 1
+}
+
+# $1 - vmName
+function cacheAndGetHostByName(){
+    checkArgCnt $FUNCNAME $# 1
+    cacheVmLocation
+    local host=$(grep -E "\s+$1$" $cacheVmLocationFile | cut -f1 -d' ')
+    isOneHost $host || exit 2
+    [ -n "$host" ] && echo $host
+}
+
+# $1 - vm name
+function _getHostByVmName(){
+    checkArgCnt $FUNCNAME $# 1
+    local host=$(grep -E "\s+$1$" $cacheVmLocationFile 2>/dev/null | cut -f1 -d' ')
+    [ -z "$host" ] && { cacheAndGetHostByName $1; return; }
+    isOneHost $host || exit 2
+    # checking what cache data not old
+    if $RemoteShell $host virsh list --all | awk '{print $2}' | grep $1 &>/dev/null ; then
+        echo $host
+    else
+        cacheAndGetHostByName $1
+    fi
+}
+
+# $1 - vm name
+function getHostByVmName(){
+    checkArgCnt $FUNCNAME $# 1
+    local host=$(_getHostByVmName $1)
+    [ -z "$host" ] && { _log "vm '$1' found more than one server or not found on servers: ${HostServers[*]}";  exit 2;  }
+    echo $host
+}
+
+function getVmBackupConfig(){
+    checkArgCnt $FUNCNAME $# 1
+    local vmName="$1"
+    local vm_cfg_dir="$cfg_path/../vmsnapshot.d/"
+    [ ! -d "$vm_cfg_dir" ] &&  vm_cfg_dir="$cfg_path/vmsnapshot.d/"
+    [ ! -d "$vm_cfg_dir" ] && exit 1
+    local vm_cfg="$vm_cfg_dir/$vmName"
+    [ ! -f "$vm_cfg" ] && vm_cfg="$vm_cfg_dir/default"
+    [ ! -f "$vm_cfg" ] && exit 2
+    echo "$vm_cfg"
+}
+
+function getVmsnapshotScript(){
+    local file="./vmsnapshot"
+    [ ! -f "$file" ] && file="/usr/lib/easy-backup/backup_vm/vmsnapshot"
+    [ ! -f "$file" ] && exit 2
+    echo "$file"
+}
+
+

@@ -1,0 +1,71 @@
+#!/bin/bash
+
+__DIR__="$(dirname ${BASH_SOURCE[0]})/"
+src="$__DIR__/../lib/functions"
+{ [ -f "$src" ] && source $src; } || \
+    { _file=/usr/lib/easy-backup/functions; [ -f "$_file" ] && source $_file; } || \
+        { echo "Can't find $src" ; exit 1; }
+
+#
+cfg_path="$__DIR__/backup_oracle.d"
+[ ! -d "$cfg_path" ] && cfg_path=/etc/backup_oracle.d
+[ ! -d "$cfg_path" ] && { echo _log "Can't find config path $cfg_path"; exit 1; }
+
+
+lockdir=/var/lock/backup_oracle
+
+# Path to local backup.
+# Backup make backups in subidir $BackupStorage/VM_NAME.
+# Never remove $BackupStorage/VM_NAME/no_rm dir
+# and it's content
+BackupStorage=/BACKUP/ORACLE
+
+# Remote backup steps logging file
+DetailedLogFile=/var/log/backup_oracle
+
+# $1 - dbCfgFile
+function loadDbConfig(){
+	checkArgCnt $FUNCNAME $# 1
+	local db="$1"
+	local cfg_dir="$cfg_path/../db.d/"
+    [ ! -d "$cfg_dir" ] &&  cfg_dir="$cfg_path/db.d/"
+    [ ! -d "$cfg_dir" ] && { _log "Can't find DB config db.d/ directory"; exit 7; };
+    local cfg="$cfg_dir/$db"
+	[ -f "$cfg" ] && source "$cfg" || { _log "Can't find DB config in db.d/"; exit 7; };
+}
+
+# $1 - host
+function saveDaemonState(){
+	checkArgCnt $FUNCNAME $# 1
+	local host="$1"
+	cmd='
+	state=0;
+	: > /var/tmp/daemons.run;
+	for daemon in $( find /home -maxdepth 3 -type d -name "*_daemon*" 2>/dev/null); do
+		[ ! -f $daemon/*.state ] && continue;
+		[ -x $daemon/*.state ] || { echo "No -x permission on $daemon/*.state"; state=1; };
+		if [ -x $daemon/*.state ] && ! $daemon/*.state | grep -i not &>/dev/null; then
+			echo $daemon >> /var/tmp/daemons.run;
+			$daemon/*.stop || state=1;
+		fi;
+	done;
+	exit $state;
+	'
+	$RemoteShell $host $cmd  && detail_log "Daemons state saved" || { detail_log "Daemons state save fail"; _log "Daemons state save fail on $host" err; }
+}
+
+# $1 - host
+function restoreDaemonState(){
+	checkArgCnt $FUNCNAME $# 1
+	local host="$1"
+	cmd='
+	state=0;
+	for daemon in $(cat /var/tmp/daemons.run); do
+		$daemon/*.stop;
+		$daemon/*.start || state=1;
+	done;
+	exit $state;
+	'
+	$RemoteShell $host "echo '$cmd' | bash --login" && detail_log "Daemons state restored" || { detail_log "Daemons state restore fail"; _log "Daemons state restore fail on $host" err; }
+}
+

@@ -1,0 +1,36 @@
+# Shutdown guest before backup (cold/hot backup)
+# default: shutdownGuest=yes
+
+# Backup location on the hypervisor
+# default: backupDest="/opt/backup/vm"
+
+# ----------------------------
+# Specific parameters
+
+# Backup xml domain definition
+# default: dumpDomain=yes
+
+# Wait guest shutdowning in seconds
+# default: sleepShutdown=30
+# default: sleepCount=10
+
+# Shutdown command (only for win VM)
+# You shold permit 135,137,138,139,445,593  tcp ports in win firewall
+# shutdownCommand='./winexe -U admin%123456 //192.168.0.1 "shutdown /s /t 01 /f"'
+
+# Which disks shold not be backuped
+# default: excludeDisk=""
+# example: excludeDisk="
+# /dev/vg00/vm_disk2
+# /dev/vg00/vm_disk3
+# "
+
+# While backup is perfoming on running VM (hot backup)
+# changes in each LVM will not grow larger than this
+# default: snapshotSize=5G
+
+# Start guest after backup
+# default: startGuestAfterBackup=yes
+
+# Address for emailing from hypervisor when error occured
+# default: email=root

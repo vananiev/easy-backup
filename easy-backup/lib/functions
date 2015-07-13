@@ -1,0 +1,244 @@
+#!/bin/bash
+
+# Project name, used by naming directories
+PROJECT="easy-backup"
+
+# Use key-authorization to connet 'HostServers'
+RemoteShell='ssh -l root'
+
+# Path to local backup.
+# Backup make backups in subidir $BackupStorage/VM_NAME.
+# Never remove $BackupStorage/VM_NAME/no_rm dir
+# and it's content
+BackupStorage=/tmp
+
+# Remote backup steps logging file
+DetailedLogFile=/var/log/backup_unknown
+
+# Then Backup is working
+# Example: 23-2,4-6,7
+# 0-6 - mean from 00:00 till 06:59
+BackupHours="0-6"
+
+# Maximum number of backuping process working at same time
+MaxBackupThreads=1
+
+# Maximum number of backuping process working on hypervisor
+# at same time
+MaxBackupThreadsForHost=1
+
+# Week Day When Backup is auto started. '-' is never
+BackupDays='-'
+
+# number of kepping backup copies
+MaxBackupCount=1
+
+cfg_path='config.d.example'
+lockdir=/var/lock/backup_unknown
+
+# Week Day When Backup is auto started. '-' is never
+BackupDays='-'
+
+# number of kepping backup copies
+MaxBackupCount=1
+
+# if you add a config paramerets please add default definition in your scripts
+# but not here
+
+# Should be resetted in custon funtions, if you don't like this value
+detailLoggerTag="$1"
+
+function _log(){
+    [ $# -eq 0 ] && { echo "Function _log expect 1 or 2 args"; return; }
+    local priority=
+    [ $# -eq 2 ] && priority=$2 || priority='err'
+    $(which logger) -t backup -p user.${priority} "$1"
+	detail_log "$1"
+}
+
+# $1 - message
+detail_log(){
+	local tag=backup_core
+	[ -n "$detailLoggerTag" ] && tag="$detailLoggerTag"
+    echo "$(date +"%b %d %T") $tag: $1"
+}
+
+# $1 - function name
+# $2 - real arg count
+# $3 - expected arg count if $4 == 0
+# $4 - expecting from $3..$4 args
+function checkArgCnt(){
+    if [ $# -eq 3  ]; then
+        [ $2 -ne $3 ] && { _log "Function $1 expects $3 parameters"; exit 3; }
+    elif [ $# -eq 4  ]; then
+        [ $2 -ge $3 -a $2 -le $4 ] && { _log "Function $1 expects from $3 to $4 parameters"; exit 3; }
+    else
+         _log "Function $FUNCNAME expects 3 or 4 parameters"; exit 3;
+    fi
+}
+
+function loadConfig(){
+	[ ! -d "$cfg_path" ] && { _log "Can't find config directory $cfg_path"; exit 6; }
+	[ $(ls -1 $cfg_path/*.conf | grep -v scheduler | wc -l) -eq 0 ] && \
+		{ _log "Can't find config in $cfg_path"; exit 3; }
+    ls -1 $cfg_path/*.conf | grep -v scheduler | xargs -i cat {} | \
+        sed -r 's/#.*//g' | sed 's/\s*=\s*/=/g' > $cfg_path/builded.cfg
+    chmod u+x $cfg_path/builded.cfg
+    . $cfg_path/builded.cfg
+    rm -f $cfg_path/builded.cfg
+    [ -z "$BackupStorage" ] && { _log "Please set local backuping path variable 'BackupStorage'"; exit 6; }
+}
+
+# please redefine this function by format of scheduler.conf
+# Set BackupDays, MaxBackupCount
+# $1 - backup object name from scheduler.cfg
+function loadSchedulerConfig(){
+    checkArgCnt $FUNCNAME $# 1
+    local db=$1
+    local array=( $(grep -E "^$db\s+" $cfg_path/scheduler.conf | tr '\t' ' ') )
+    [ ${#array[*]} -eq 0  ] &&  { _log "Can't find DB '$db' in shediler.conf"; exit 7; }
+    BackupDays=${array[1]}
+    MaxBackupCount=${array[2]}
+}
+
+# $1 - backup object
+function getLastBackupDay(){
+	checkArgCnt $FUNCNAME $# 1
+	[ ! -d $BackupStorage/$1 ] && { echo "-1"; return; }
+	stat -L $BackupStorage/$1 | grep Modify: | perl -ane '$_ =~ m/Modify: [0-9]+-[0-9]+-([0-9]+)/; print $1;'
+}
+
+# $1 - backup object
+function setLastBackupDayToNow(){
+	checkArgCnt $FUNCNAME $# 1
+	local path=$BackupStorage/$1
+	[ ! -d "$path" ] && mkdir -p $path
+	[ -L "$path" ] && path="$(readlink "$path")"
+	[ ! -w "$path" ] && { _log "Can't touch $path to set LastBackupDay"; exit 1; }
+	touch $path
+}
+
+# $1 - checking number
+# $2 - interval, example: 22-2,4-6,7-7 or 6-2,3,4,5
+# return: 0 - if interval include number, 1 - otherwise
+function numberInInterval(){
+	checkArgCnt $FUNCNAME $# 2
+    local number=$1
+	local intervals=$2
+	[ -z "$number" -o "$number" == "-" ] && return 1
+	[ -z "$intervals" -o "$intervals" == "-" ] && return 1
+    [ "$intervals" != "$(echo $intervals | tr -dc '[0-9]\-,')" ] && { _log "Error in setting Interval parameter in $FUNCNAME function"; exit 1; }
+	for interval in $(echo $intervals | tr ',' ' '); do
+        if echo $interval | grep '-' &>/dev/null; then
+			local from=$(echo $interval | cut -f 1 -d '-')
+        	local to=$(echo $interval | cut -f 2 -d '-')
+        	if [ "$from" -le "$to"  ]; then
+            	[ "$number" -ge "$from" -a "$number" -le "$to" ] && return 0
+        	else
+            	[ "$number" -ge "$from" -o "$number" -le "$to" ] && return 0
+        	fi
+		else
+			[ "$interval" -eq "$number" ] && return 0
+		fi
+    done
+	return 1
+}
+
+# $1 - host
+function checkNumberOfBackupProcessOnHost(){
+    checkArgCnt $FUNCNAME $# 1
+    local host=$1
+    local cnt=$(ls -1 $lockdir/$host 2>/dev/null | wc -l)
+    while [ $cnt -ge "$MaxBackupThreadsForHost" ]; do
+        sleep 30
+        cnt=$(ls -1 $lockdir/$host 2>/dev/null | wc -l)
+    done
+}
+
+# $1 - host
+# $2 - backup
+function lockBackup(){
+    checkArgCnt $FUNCNAME $# 2
+	isLokedBackup "$1" "$2" && { _log "Backup for '$2' already working. Exit."; exit 255; }
+	checkNumberOfBackupProcessOnHost "$1"
+    mkdir -p $lockdir/$1 &>/dev/null
+    touch $lockdir/$1/$2
+}
+
+# $1 - host
+# $2 - backup
+function unlockBackup(){
+    checkArgCnt $FUNCNAME $# 2
+    [ "$1" != "" -a "$2" != "" ] && rm -f $lockdir/$1/$2
+}
+
+# $1 - host
+# $2 - backup
+function isLokedBackup(){
+	checkArgCnt $FUNCNAME $# 2
+	[ -f $lockdir/$1/$2 ] && return 0
+	return 1
+}
+
+# $1 - host
+# $2 - backup
+function _abortBackup(){
+   	_log "Backup for '$2' aborted"
+    [ "$1"!="" -a "$2"!="" ] && unlockBackup $1 $2
+	exit 255
+}
+
+# $1 - backupPath
+function deleteLocalOldBackups(){
+    checkArgCnt $FUNCNAME $# 1
+    local backupPath="$1"
+    [ -z "$backupPath" -o "$backupPath" == "/" ] && return
+	[ ! -d $backupPath ] && { _log "Can't delete old backups: path not found"; abortBackup;  }
+    
+	pushd $backupPath &>/dev/null
+    local delNum=$(( $(ls -1 | grep -v no_rm | wc -l) - $MaxBackupCount ))
+    [ "$delNum" -gt 0 ] && { rm -rf $(ls -1t | grep -v no_rm | tail -$delNum) || { _log "Can't delete old backups";  abortBackup; } }
+    popd &>/dev/null
+}
+
+function checkNumberOfRunningBackupProcess(){
+    # we can't see here '/'
+    echo "$lockdir" | grep "/var/lock" &>/dev/null || \
+        { _log "lockdir=$lockdir should be '/var/lock/...'"; exit 1;}
+    # delete old hangs-backup lock files
+    find $lockdir -type f -mtime +1 -exec rm -f {} \;
+    sleep 3 # wait creating lock file by previos started backup
+    local running=$(find $lockdir -type f | wc -l)
+    [ $running -ge $MaxBackupThreads ] && exit 0
+}
+
+function checkBackupHours(){
+    local current_hour=$(date +%k)
+    if ! numberInInterval $current_hour "$BackupHours"; then exit 0; fi
+}
+
+function backupObjects(){
+    cat $cfg_path/scheduler.conf | sed -r 's/#.*//g' | awk '{ print $1; }'
+}
+
+# $1 - backup script
+function startScheduler(){
+	checkArgCnt $FUNCNAME $# 1
+	local backup_script="$1"
+	loadConfig
+	checkBackupHours
+	currentDay=$(date +%d)
+	currentDayOfWeek=$(date +%u)
+	for obj in $(backupObjects); do
+    	[ "$(getLastBackupDay $obj)" -eq "$currentDay" ] && continue
+	    loadSchedulerConfig $obj
+    	if numberInInterval "$currentDayOfWeek" "$BackupDays"; then
+        	checkNumberOfRunningBackupProcess
+			{
+				setLastBackupDayToNow $obj
+				/bin/nice -n 19 $backup_script $obj &>> $DetailedLogFile
+			} &
+    	fi
+	done
+}
+

@@ -1,0 +1,24 @@
+#!/bin/bash
+
+cd $(dirname $0)
+
+[ $# -eq 0 ] && BACKUP_SCRIPT="./backup" || BACKUP_SCRIPT="$1"
+
+{ [ -f functions ] && source ./functions ; } || {
+	_file=$(rpm -ql $(rpm -qf $(which $BACKUP_SCRIPT) ) | grep "/functions" | tail -1 )
+	[ -n "$_file" -a -f "$_file" ] && source $_file || {
+		echo "Can't load ./functions file"
+		exit 1
+	}
+}
+
+if [ -f "$BACKUP_SCRIPT" ]; then
+	[ "." == "$(dirname $BACKUP_SCRIPT)" ] && BACKUP_SCRIPT="./$BACKUP_SCRIPT"
+elif [ -f "/usr/bin/$BACKUP_SCRIPT" ]; then
+	BACKUP_SCRIPT="/usr/bin/$BACKUP_SCRIPT"
+else
+	echo "Can't find backup script: $BACKUP_SCRIPT"
+	exit 3
+fi
+
+startScheduler "$BACKUP_SCRIPT"

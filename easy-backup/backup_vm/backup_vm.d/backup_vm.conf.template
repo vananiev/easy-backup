@@ -1,0 +1,27 @@
+# List of virtualization servers from which we want backuping VMs
+HostServers = ( your-host1 your-host2 )
+
+# Use key-authorization to connet 'HostServers'
+# GSSAPIAuthentication=default - ssh hangs on dns reverls lookup
+RemoteShell = 'ssh -l root -o GSSAPIAuthentication=no -oStrictHostKeyChecking=no'
+
+# Path to local backup.
+# Backup make backups in subidir $BackupStorage/VM_NAME.
+# Never remove $BackupStorage/VM_NAME/no_rm dir
+# and it's content
+BackupStorage = /BACKUP/servers
+
+# Remote backup steps logging file
+DetailedLogFile = /var/log/backup_vm
+
+# Then Backup is working
+# Example: 23-2,4-6,7
+# 0-6 - mean from 00:00 till 06:59
+BackupHours = "0-6"
+
+# Maximum number of backuping process working at same time
+MaxBackupThreads = 6
+
+# Maximum number of backuping process working on hypervisor
+# at same time
+MaxBackupThreadsForHost = 1

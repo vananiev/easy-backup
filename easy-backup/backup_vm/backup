@@ -1,0 +1,118 @@
+#!/bin/bash
+
+# Backup VM
+# Copyright 2014 Vitalij Anan'ev <an-vitek@ya.ru>
+# version = '0.1';
+#
+# $1 - buckuping VM name
+#
+
+#begin GPL
+#
+#    This is free software: you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation, version 3 of the License.
+#
+#    VMsnapshot is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License
+#    along with VMsnapshot.  If not, see <http://www.gnu.org/licenses/>.
+#end GPL
+
+function copyBackupScript(){
+	checkArgCnt $FUNCNAME $# 1
+	local host=$1
+	$RemoteShell $host "mkdir -p ~/scripts/vmsnapshot.d 2>/dev/null; chmod 700 ~/scripts/vmsnapshot.d;"
+	local vm_cfg=$( getVmBackupConfig $vmName ) || { _log "Can't find $vm_cfg";  abortBackup; }
+	detail_log "Using vm backup config: $vm_cfg"
+	{
+	local vmsnapshot=$( getVmsnapshotScript ) ||  { _log "Can't find $vmsnapshot"; abortBackup; }
+	local winexe="./winexe"
+	[ ! -f "$winexe" ] && vmsnapshot=/usr/bin/winexe
+    [ ! -f "$winexe" ] && { _log "Can't find $winexe"; abortBackup; }
+	cat $vmsnapshot | $RemoteShell $host -o Compression=no -c arcfour "cat - > ~/scripts/vmsnapshot; chmod 500 ~/scripts/vmsnapshot" && \
+	cat $vm_cfg | $RemoteShell $host -o Compression=no -c arcfour "cat - > ~/scripts/vmsnapshot.d/$vmName; chmod 400 ~/scripts/vmsnapshot.d/$vmName;" && \
+	cat $winexe | $RemoteShell $host -o Compression=no -c arcfour "cat - > ~/scripts/winexe; chmod 500 ~/scripts/winexe"
+	} ||  { _log "Can't copy backup script";  abortBackup;  }
+}
+
+# $1 - host name
+# $2 - VM name
+function backupVM(){
+	checkArgCnt $FUNCNAME $# 2
+	local host=$1
+	local vmName=$2
+	_log "Backup for vm '$vmName' started" info
+	$RemoteShell $host "cd ~/scripts/ && ./vmsnapshot vmsnapshot.d/$vmName"
+	[ 0 -ne $(echo ${PIPESTATUS[*]} | tr ' ' '+' | bc) ] && { _log "Error while backuping vm '$vmName'";  abortBackup; }
+}
+
+# $1 - vmName
+function getRemoteBackupPath(){
+	checkArgCnt $FUNCNAME $# 1
+	local vmName=$1
+	local vm_cfg=$( getVmBackupConfig $vmName ) || { _log "Can't find $vm_cfg";  abortBackup; }
+	local dest=$(cat $vm_cfg | sed 's/#.*//g' | sed -n 's/backupDest=//p')
+	local vmsnapshot=$( getVmsnapshotScript ) ||  { _log "Can't find $vmsnapshot"; abortBackup; }
+	[ -z "$dest" ] && dest=$(sed -n 's/backupDest=//p' $vmsnapshot | tail -1 )
+	[ -z "$dest" ] && { _log "Can't find backupDest parameter in config";  abortBackup; }
+	echo $dest | tr -d '"' | tr -d "'"
+}
+
+# $1 - remote host
+# $2 - remotePath
+# $3 - vmName
+function moveBackupToBackupStorage(){
+	checkArgCnt $FUNCNAME $# 3
+	local host=$1
+	local vmName=$3
+	local remotePath=$2/$vmName
+	_log "Backup for vm '$vmName' done. Copying to backup storage..." info
+	[ -z "$remotePath" ] && { _log "Can't find remote backup path for $vmName"; abortBackup; }
+	local backup=$($RemoteShell $host "ls -1t $remotePath | head -1")
+	[ -z "$backup" ] && { _log "Can't find remote backup in $vmName:$remotePath"; abortBackup; }
+	local vmBackupPath="$BackupStorage/$vmName/snapshot"
+	[ ! -d  $vmBackupPath ] && { mkdir -p $vmBackupPath || { _log "Can't create path"; abortBackup; } }
+	
+	pushd $vmBackupPath	&>/dev/null
+	$RemoteShell $host -o Compression=no -c arcfour "cd $remotePath && tar -cf - $backup | lzop -c" | lzop -dc | tar -xf -
+	[ 0 -ne $(echo ${PIPESTATUS[*]} | tr ' ' '+' | bc) ] && \
+        { _log "Error while getting backup for $vmName to backup storage";  abortBackup; }
+	popd &>/dev/null
+
+	if [ "$SaveRemoteBackup" == "true" ]; then
+		$RemoteShell $host "cd $remotePath && rm -rf \$(ls -1 | grep -v $backup)"
+	else
+		$RemoteShell $host "rm -rf $remotePath/*"
+	fi
+	deleteLocalOldBackups $vmBackupPath
+}
+
+function abortBackup(){
+	_abortBackup "$host" "$vmName"
+}
+
+
+cd $(dirname $0)
+{ [ -f "functions" ] && source ./functions; } || \
+    { _file=/usr/lib/easy-backup/backup_vm/functions; [ -f "$_file" ] && source $_file; } || \
+        { echo "Can't find backup_vm/functions" ; exit 1; }
+
+checkArgCnt $(basename $0) $# 1
+vmName=$1
+
+loadConfig
+loadSchedulerConfig $vmName
+host=$(getHostByVmName $vmName) || exit 2
+lockBackup $host $vmName
+copyBackupScript $host
+backupVM $host $vmName
+remotePath="$(getRemoteBackupPath $vmName)" || abortBackup
+moveBackupToBackupStorage $host "$remotePath" $vmName
+unlockBackup $host $vmName
+
+_log "Backup for vm '$vmName' successfully ended" info
+

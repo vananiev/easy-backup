@@ -1,0 +1,28 @@
+#!/bin/bash
+
+function abortBackup(){
+	# do before abort backup
+	_abortBackup $host $obj
+}
+
+cd $(dirname $0)
+{ [ -f functions ] && source ./functions ; } || \
+    { [ -f /usr/lib/easy-backup/functions ] && source /usr/lib/easy-backup/functions } || \
+        { echo "Can't load ./functions file"; exit 1; }
+
+checkArgCnt $(basename $0) $# 1
+obj="$1"
+
+loadConfig
+loadSchedulerConfig "$obj"
+host=	# calculate host where backup is perfomed
+_log "Backup for '$obj' is started" info
+lockBackup "$host" "$obj"
+
+
+# your backup script is here
+
+
+deleteLocalOldBackups "$BackupStorage/$obj"
+unlockBackup "$host" "$obj"
+_log "Backup for '$obj' successfully ended" info
